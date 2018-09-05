@@ -1,16 +1,15 @@
 import org.joml.*
-import java.awt.image.BufferedImage
-import javax.imageio.ImageIO
 import kotlin.math.absoluteValue
 import kotlin.math.roundToInt
 import kotlin.reflect.KMutableProperty
 import kotlin.reflect.full.memberProperties
 import kotlin.reflect.jvm.javaType
 
-class Graphics(val bufferedImage: BufferedImage) {
+class Graphics(val context: DSGContext) {
+    val bufferedImage = context.image
     val bufferSize = Vector2i(bufferedImage.width, bufferedImage.height)
 
-    lateinit var shader : Shader<Vertex, IntermediaryData>
+    lateinit var shader: Shader<Vertex, IntermediaryData>
         private set
 
     lateinit private var vsCtx: ActualVertexShaderCtx<Vertex>
@@ -24,8 +23,10 @@ class Graphics(val bufferedImage: BufferedImage) {
 
     fun clear(clearColor: Vector4dc) {
         for (y in 0 until bufferSize.y)
-            for (x in 0 until bufferSize.x)
+            for (x in 0 until bufferSize.x) {
                 bufferedImage.setRGB(x, y, clearColor.toArgbInt())
+                context.zbuffer[x * bufferSize.x + y] = 0.0f
+            }
     }
 
     fun point(position: Vector2ic, color: Vector4dc) {
@@ -105,6 +106,8 @@ class Graphics(val bufferedImage: BufferedImage) {
         val bot = sorted[2]
 
         //println("top $top mid $mid bot $bot")
+        if (top.y == bot.y)
+            return //degerate
 
         val cut = Vector2i(bot.x + ((top.x - bot.x) / (top.y - bot.y).toDouble() * (mid.y - bot.y)).roundToInt(), mid.y)
 
@@ -114,17 +117,26 @@ class Graphics(val bufferedImage: BufferedImage) {
         //Shading init
         fsCtx.setup(oa, ob, oc)
 
-        //Top part
-        for (y in top.y..mid.y) {
+        //Top part (top is y = 0 remember !)
+        for (y in Math.max(top.y, 0)..Math.min(bufferSize.y - 1, mid.y)) {
             val scale: Double = (mid.y - y).toDouble() / (top.y - mid.y).toDouble()
             val sx: Int = midleft.x + ((midleft.x - top.x) * scale).toInt()
             val ex: Int = midright.x + ((midright.x - top.x) * scale).toInt()
 
-            for (x in sx..ex) {
+            for (x in Math.max(0, sx)..Math.min(bufferSize.x - 1, ex)) {
                 val p = Vector2i(x, y)
                 val bary = barycentric(points, p)
 
                 fsCtx.interpolateInputs(bary)
+
+                val depth = fsCtx.passedData.position.z
+                if(depth <= context.zbuffer[x * bufferSize.x + y])
+                    context.zbuffer[x * bufferSize.x + y] = depth.toFloat()
+                else
+                    continue
+
+                /*if(fsCtx.passedData.position.z > 1.0 || fsCtx.passedData.position.z < 0.0)
+                    continue*/
                 shader.fragmentShader.invoke(fsCtx)
                 val color = fsCtx.output
 
@@ -132,16 +144,25 @@ class Graphics(val bufferedImage: BufferedImage) {
             }
         }
         //Bottom part
-        for (y in mid.y..bot.y) {
+        for (y in Math.max(0, mid.y)..Math.min(bufferSize.y - 1, bot.y)) {
             val scale: Double = (y - mid.y).toDouble() / (mid.y - bot.y).toDouble()
             val sx: Int = midleft.x + ((midleft.x - bot.x) * scale).toInt()
             val ex: Int = midright.x + ((midright.x - bot.x) * scale).toInt()
 
-            for (x in sx..ex) {
+            for (x in Math.max(0, sx)..Math.min(bufferSize.x - 1, ex)) {
                 val p = Vector2i(x, y)
                 val bary = barycentric(points, p)
 
                 fsCtx.interpolateInputs(bary)
+
+                val depth = fsCtx.passedData.position.z
+                if(depth <= context.zbuffer[x * bufferSize.x + y])
+                     context.zbuffer[x * bufferSize.x + y] = depth.toFloat()
+                else
+                    continue
+
+                //if(fsCtx.passedData.position.z > 1.0 || fsCtx.passedData.position.z < 0.0)
+                //    println(fsCtx.passedData.position.z)
                 shader.fragmentShader.invoke(fsCtx)
                 val color = fsCtx.output
 
@@ -151,8 +172,8 @@ class Graphics(val bufferedImage: BufferedImage) {
 
         /*line(ai, bi, dbgColor)
         line(ai, ci, dbgColor)
-        line(ci, bi, dbgColor)
-        line(cut, mid, dbgColor)*/
+        line(ci, bi, dbgColor)*/
+        //line(cut, mid, dbgColor)
     }
 
     fun Vector2dc.inViewport() = Vector2d(x() * bufferSize.x, y() * bufferSize.y)
@@ -169,73 +190,99 @@ class Graphics(val bufferedImage: BufferedImage) {
 
         return acc
     }
-}
 
-class ActualVertexShaderCtx<VF : Vertex> : Shader.VertexShaderCtx<VF> {
-    lateinit override var vertex: VF
-}
-
-fun <VF : Vertex, IR : IntermediaryData> Shader<VF, IR>.createVertexCtx(): ActualVertexShaderCtx<VF> {
-    return ActualVertexShaderCtx<VF>()
-}
-
-class ActualFragmentShaderCtx<IR : IntermediaryData> : Shader.FragmentShaderCtx<IR> {
-    override val frameNumber: Int
-        get() = Application.frame
-
-    lateinit override var passedData: IR
-    override var output: Vector4d = Vector4d(0.0)
-
-    lateinit private var a: IR
-    lateinit private var b: IR
-    lateinit private var c: IR
-    lateinit private var weights: Vector3d
-
-    private lateinit var interpolators: MutableList<() -> Unit>
-
-    fun setup(a: IR, b: IR, c: IR) {
-        this.a = a
-        this.b = b
-        this.c = c
+    inner class ActualVertexShaderCtx<VF : Vertex> : Shader.VertexShaderCtx<VF> {
+        lateinit override var vertex: VF
     }
 
-    fun interpolateInputs(weights: Vector3d) {
-        this.weights = weights
-
-        passedData = a.clone() as IR
-
-        if(! ::interpolators.isInitialized)
-            createInterpolators()
-
-        interpolators.forEach { it.invoke() }
+    fun <VF : Vertex, IR : IntermediaryData> Shader<VF, IR>.createVertexCtx(): ActualVertexShaderCtx<VF> {
+        return ActualVertexShaderCtx<VF>()
     }
 
-    private fun createInterpolators() {
-        interpolators = mutableListOf<() -> Unit>()
+    inner class ActualFragmentShaderCtx<IR : IntermediaryData> : Shader.FragmentShaderCtx<IR> {
+        override val frameNumber: Int
+            get() = context.frame
 
-        for (member in passedData.javaClass.kotlin.memberProperties.filterIsInstance<KMutableProperty<*>>()) {
-            //println("Analysing member $member ${member.returnType.javaClass}")
-            if (member.returnType.javaType == Vector2d::class.java) {
-                //println("Creating interpolator for $member")
-                interpolators.add {
-                    val interpolated = Vector2d(0.0)
-                    val aValue: Vector2d = member.getter.call(a) as Vector2d
-                    val bValue: Vector2d = member.getter.call(b) as Vector2d
-                    val cValue: Vector2d = member.getter.call(c) as Vector2d
-                    interpolated.addScaled(aValue, weights.x)
-                    interpolated.addScaled(bValue, weights.y)
-                    interpolated.addScaled(cValue, weights.z)
-                    member.setter.call(passedData, interpolated)
+        lateinit override var passedData: IR
+        override var output: Vector4d = Vector4d(0.0)
+
+        lateinit private var a: IR
+        lateinit private var b: IR
+        lateinit private var c: IR
+        lateinit private var weights: Vector3d
+
+        private lateinit var interpolators: MutableList<() -> Unit>
+
+        fun setup(a: IR, b: IR, c: IR) {
+            this.a = a
+            this.b = b
+            this.c = c
+        }
+
+        fun interpolateInputs(weights: Vector3d) {
+            this.weights = weights
+
+            passedData = a.clone() as IR
+
+            if (!::interpolators.isInitialized)
+                createInterpolators()
+
+            interpolators.forEach { it.invoke() }
+        }
+
+        private fun createInterpolators() {
+            interpolators = mutableListOf<() -> Unit>()
+
+            for (member in passedData.javaClass.kotlin.memberProperties.filterIsInstance<KMutableProperty<*>>()) {
+                //println("Analysing member $member ${member.returnType.javaClass}")
+                if (member.returnType.javaType == Vector2d::class.java) {
+                    //println("Creating interpolator for $member")
+                    interpolators.add {
+                        val interpolated = Vector2d(0.0)
+                        val aValue: Vector2d = member.getter.call(a) as Vector2d
+                        val bValue: Vector2d = member.getter.call(b) as Vector2d
+                        val cValue: Vector2d = member.getter.call(c) as Vector2d
+                        interpolated.addScaled(aValue, weights.x)
+                        interpolated.addScaled(bValue, weights.y)
+                        interpolated.addScaled(cValue, weights.z)
+                        member.setter.call(passedData, interpolated)
+                    }
+                }
+
+                if (member.returnType.javaType == Vector3d::class.java) {
+                    //println("Creating interpolator for $member")
+                    interpolators.add {
+                        val interpolated = Vector3d(0.0)
+                        val aValue: Vector3d = member.getter.call(a) as Vector3d
+                        val bValue: Vector3d = member.getter.call(b) as Vector3d
+                        val cValue: Vector3d = member.getter.call(c) as Vector3d
+                        interpolated.addScaled(aValue, weights.x)
+                        interpolated.addScaled(bValue, weights.y)
+                        interpolated.addScaled(cValue, weights.z)
+                        member.setter.call(passedData, interpolated)
+                    }
+                }
+
+                if (member.returnType.javaType == Vector4d::class.java) {
+                    //println("Creating interpolator for $member")
+                    interpolators.add {
+                        val interpolated = Vector4d(0.0)
+                        val aValue: Vector4d = member.getter.call(a) as Vector4d
+                        val bValue: Vector4d = member.getter.call(b) as Vector4d
+                        val cValue: Vector4d = member.getter.call(c) as Vector4d
+                        interpolated.addScaled(aValue, weights.x)
+                        interpolated.addScaled(bValue, weights.y)
+                        interpolated.addScaled(cValue, weights.z)
+                        member.setter.call(passedData, interpolated)
+                    }
                 }
             }
         }
     }
-}
 
-fun <VF : Vertex, IR : IntermediaryData> Shader<VF, IR>.createFragmentCtx(): ActualFragmentShaderCtx<IR> {
-    return ActualFragmentShaderCtx<IR>()
-}
+    fun <VF : Vertex, IR : IntermediaryData> Shader<VF, IR>.createFragmentCtx(): ActualFragmentShaderCtx<IR> {
+        return ActualFragmentShaderCtx<IR>()
+    }
 
-operator fun Vector2d.plusAssign(mul: Vector2d?) {
-    this.add(mul)
+
 }

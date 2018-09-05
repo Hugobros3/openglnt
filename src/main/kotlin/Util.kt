@@ -10,6 +10,10 @@ fun Vector2ic.sign(): Vector2i = Vector2i(x().sign, y().sign)
 operator fun Vector2ic.minus(other: Vector2ic): Vector2i = Vector2i(x() - other.x(), y() - other.y())
 operator fun Vector2ic.plus(other: Vector2ic): Vector2i = Vector2i(x() + other.x(), y() + other.y())
 
+operator fun Vector2d.plusAssign(mul: Vector2d?) {
+    this.add(mul)
+}
+
 fun Vector2d.addScaled(vec: Vector2d, s: Double) {
     this.add(vec.x * s, vec.y * s)
 }
