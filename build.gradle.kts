@@ -17,6 +17,8 @@ dependencies {
     compile("org.l33tlabs.twl", "pngdecoder", "1.0")
 
     compile(kotlin("stdlib-jdk8"))
+    compile(kotlin("reflect"))
+
     testCompile("junit", "junit", "4.12")
 }
 

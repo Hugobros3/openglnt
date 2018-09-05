@@ -2,39 +2,34 @@ import org.joml.Vector2d
 import org.joml.Vector4d
 import javax.imageio.ImageIO
 
-class Shader<VF : Vertex, ID : IntermediaryData> {
-    var vertexShader: ((VertexShaderCtx<VF, ID>) -> Unit) = {
-        it.output.position = it.vertex.position
-    }
-    var fragmentShader: (FramgnentShaderCtx<ID>) -> Unit = {
-        it.output = Vector4d(1.0, 1.0, 1.0, 1.0)
-    }
-
-    interface VertexShaderCtx<VF: Vertex, ID: IntermediaryData> {
+class Shader<VF : Vertex, ID : IntermediaryData>(
+        val vertexShader: ((VertexShaderCtx<VF>) -> ID),
+        val fragmentShader: (FragmentShaderCtx<ID>) -> Unit
+) {
+    interface VertexShaderCtx<VF : Vertex> {
         val vertex: VF
-        val output: ID
     }
 
-    interface FramgnentShaderCtx<ID: IntermediaryData> {
+    interface FragmentShaderCtx<ID : IntermediaryData> {
+        val frameNumber: Int
+
         val passedData: ID
         var output: Vector4d
     }
 }
 
-open class IntermediaryData(var position: Vector4d) {
-
+open class IntermediaryData(var position: Vector4d) : Cloneable {
+    public override fun clone() = super.clone()
 }
 
 object DemoShaders {
-    val basicShader = Shader<Vertex, IntermediaryDataWithTexcoord>()
-
     val checker = Texture(ImageIO.read(javaClass.getResource("/pepe.png")))
 
-    init {
-        basicShader.fragmentShader = {
+    /*val basicShader = Shader<Vertex, IntermediaryDataWithTexcoord>({
+        IntermediaryDataWithTexcoord(it.vertex.position, it.vertex.textureCoordinate)
+    }, {
+        //it.output = Vector4d(it.passedData.texcoord.x, it.passedData.texcoord.y, 0.0, 1.0)
+        it.output = checker.sample(it.passedData.texcoord.mul(1.0 + 0.5 * Math.sin(it.frameNumber * 0.1)))
+    })*/
 
-        }
-    }
-
-    class IntermediaryDataWithTexcoord(position: Vector4d, var texcoord: Vector2d) : IntermediaryData(position)
 }
