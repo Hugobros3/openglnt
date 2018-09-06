@@ -1,4 +1,5 @@
 import org.joml.*
+import javax.imageio.ImageIO
 import kotlin.math.absoluteValue
 import kotlin.math.roundToInt
 import kotlin.reflect.KMutableProperty
@@ -15,6 +16,16 @@ class Graphics(val context: DSGContext) {
     lateinit private var vsCtx: ActualVertexShaderCtx<Vertex>
     lateinit private var fsCtx: ActualFragmentShaderCtx<IntermediaryData>
 
+    var drawMode = DrawMode.SHADER
+
+    val checker = Texture(ImageIO.read(javaClass.getResource("/checker.png")))
+
+    enum class DrawMode {
+        FLAT_COLOR,
+        TEXTURED,
+        SHADER,
+    }
+
     fun usingShader(shader: Shader<*, *>) {
         this.shader = shader as Shader<Vertex, IntermediaryData>
         vsCtx = shader.createVertexCtx()
@@ -25,7 +36,7 @@ class Graphics(val context: DSGContext) {
         for (y in 0 until bufferSize.y)
             for (x in 0 until bufferSize.x) {
                 bufferedImage.setRGB(x, y, clearColor.toArgbInt())
-                context.zbuffer[x * bufferSize.x + y] = 0.0f
+                context.zbuffer[x * bufferSize.x + y] = Float.MAX_VALUE
             }
     }
 
@@ -81,16 +92,22 @@ class Graphics(val context: DSGContext) {
     }
 
     fun triangle(a: Vertex, b: Vertex, c: Vertex, color: Vector4d) {
+        var color = color
         val vertices = arrayOf(a, b, c)
 
         vsCtx.vertex = a
         val oa = shader.vertexShader.invoke(vsCtx)
+        oa.position.normHomogeneous()
 
         vsCtx.vertex = b
         val ob = shader.vertexShader.invoke(vsCtx)
+        ob.position.normHomogeneous()
 
         vsCtx.vertex = c
         val oc = shader.vertexShader.invoke(vsCtx)
+        oc.position.normHomogeneous()
+
+        val transformedVertices = arrayOf(oa, ob, oc)
 
         val ai = oa.position.inViewport().toVector2i()
         val bi = ob.position.inViewport().toVector2i()
@@ -127,18 +144,25 @@ class Graphics(val context: DSGContext) {
                 val p = Vector2i(x, y)
                 val bary = barycentric(points, p)
 
-                fsCtx.interpolateInputs(bary)
+                if (drawMode == DrawMode.SHADER) {
+                    fsCtx.interpolateInputs(bary)
 
-                val depth = fsCtx.passedData.position.z
-                if(depth <= context.zbuffer[x * bufferSize.x + y])
-                    context.zbuffer[x * bufferSize.x + y] = depth.toFloat()
-                else
-                    continue
+                    val depth = fsCtx.passedData.position.z
+                    if (depth <= context.zbuffer[x * bufferSize.x + y])
+                        context.zbuffer[x * bufferSize.x + y] = depth.toFloat()
+                    else
+                        continue
 
-                /*if(fsCtx.passedData.position.z > 1.0 || fsCtx.passedData.position.z < 0.0)
-                    continue*/
-                shader.fragmentShader.invoke(fsCtx)
-                val color = fsCtx.output
+                    //if(fsCtx.passedData.position.z > 1.0 || fsCtx.passedData.position.z < 0.0)
+                    //    println(fsCtx.passedData.position.z)
+                    shader.fragmentShader.invoke(fsCtx)
+                    color = fsCtx.output
+                } else if (drawMode == DrawMode.TEXTURED) {
+                    val texcoord = extractAndInterpolate(transformedVertices, bary) {
+                        (this as? CubeApplication.IntermediaryDataWithTexcoord)?.texcoord ?: Vector2d(0.0)
+                    }
+                    color = checker.sample(texcoord)
+                }
 
                 point(p, color)
             }
@@ -153,18 +177,25 @@ class Graphics(val context: DSGContext) {
                 val p = Vector2i(x, y)
                 val bary = barycentric(points, p)
 
-                fsCtx.interpolateInputs(bary)
+                if (drawMode == DrawMode.SHADER) {
+                    fsCtx.interpolateInputs(bary)
 
-                val depth = fsCtx.passedData.position.z
-                if(depth <= context.zbuffer[x * bufferSize.x + y])
-                     context.zbuffer[x * bufferSize.x + y] = depth.toFloat()
-                else
-                    continue
+                    val depth = fsCtx.passedData.position.z
+                    if (depth <= context.zbuffer[x * bufferSize.x + y])
+                        context.zbuffer[x * bufferSize.x + y] = depth.toFloat()
+                    else
+                        continue
 
-                //if(fsCtx.passedData.position.z > 1.0 || fsCtx.passedData.position.z < 0.0)
-                //    println(fsCtx.passedData.position.z)
-                shader.fragmentShader.invoke(fsCtx)
-                val color = fsCtx.output
+                    //if(fsCtx.passedData.position.z > 1.0 || fsCtx.passedData.position.z < 0.0)
+                    //    println(fsCtx.passedData.position.z)
+                    shader.fragmentShader.invoke(fsCtx)
+                    color = fsCtx.output
+                } else if (drawMode == DrawMode.TEXTURED) {
+                    val texcoord = extractAndInterpolate(transformedVertices, bary) {
+                        (this as? CubeApplication.IntermediaryDataWithTexcoord)?.texcoord ?: Vector2d(0.0)
+                    }
+                    color = checker.sample(texcoord)
+                }
 
                 point(p, color)
             }
@@ -180,13 +211,29 @@ class Graphics(val context: DSGContext) {
 
     fun Vector4dc.inViewport() = Vector2d(x() * bufferSize.x, y() * bufferSize.y)
 
+    var usePerspectiveCorectInterpolation = true
+
     /** 'fixed function' interp; unused */
-    fun extractAndInterpolate(points: Array<Vertex>, bary: Vector3d, extractor: Vertex.() -> Vector2dc): Vector2d {
+    fun <I : IntermediaryData> extractAndInterpolate(points: Array<I>, bary: Vector3d, extractor: I.() -> Vector2dc): Vector2d {
         val acc = Vector2d()
 
-        acc += Vector2d(extractor.invoke(points[0])).mul(bary.x)
-        acc += Vector2d(extractor.invoke(points[1])).mul(bary.y)
-        acc += Vector2d(extractor.invoke(points[2])).mul(bary.z)
+        var weights = bary
+        if (usePerspectiveCorectInterpolation) {
+            val z0 = points[0].position.z
+            val z1 = points[1].position.z
+            val z2 = points[2].position.z
+
+            acc += (Vector2d(extractor.invoke(points[0])).mul(weights.x / z0))
+            acc += (Vector2d(extractor.invoke(points[1])).mul(weights.y / z1))
+            acc += (Vector2d(extractor.invoke(points[2])).mul(weights.z / z2))
+
+            val divisor = weights.x / z0 + weights.y / z1 + weights.z / z2
+            acc.mul(1.0 / divisor)
+        } else {
+            acc += Vector2d(extractor.invoke(points[0])).mul(weights.x)
+            acc += Vector2d(extractor.invoke(points[1])).mul(weights.y)
+            acc += Vector2d(extractor.invoke(points[2])).mul(weights.z)
+        }
 
         return acc
     }
@@ -238,13 +285,20 @@ class Graphics(val context: DSGContext) {
                 if (member.returnType.javaType == Vector2d::class.java) {
                     //println("Creating interpolator for $member")
                     interpolators.add {
+                        val z0 = a.position.z
+                        val z1 = b.position.z
+                        val z2 = c.position.z
+
                         val interpolated = Vector2d(0.0)
                         val aValue: Vector2d = member.getter.call(a) as Vector2d
                         val bValue: Vector2d = member.getter.call(b) as Vector2d
                         val cValue: Vector2d = member.getter.call(c) as Vector2d
-                        interpolated.addScaled(aValue, weights.x)
-                        interpolated.addScaled(bValue, weights.y)
-                        interpolated.addScaled(cValue, weights.z)
+                        interpolated.addScaled(aValue, weights.x / z0)
+                        interpolated.addScaled(bValue, weights.y / z1)
+                        interpolated.addScaled(cValue, weights.z / z2)
+
+                        val divisor = weights.x / z0 + weights.y / z1 + weights.z / z2
+                        interpolated.mul(1.0 / divisor)
                         member.setter.call(passedData, interpolated)
                     }
                 }
@@ -252,13 +306,21 @@ class Graphics(val context: DSGContext) {
                 if (member.returnType.javaType == Vector3d::class.java) {
                     //println("Creating interpolator for $member")
                     interpolators.add {
+                        val z0 = a.position.z
+                        val z1 = b.position.z
+                        val z2 = c.position.z
+
                         val interpolated = Vector3d(0.0)
                         val aValue: Vector3d = member.getter.call(a) as Vector3d
                         val bValue: Vector3d = member.getter.call(b) as Vector3d
                         val cValue: Vector3d = member.getter.call(c) as Vector3d
-                        interpolated.addScaled(aValue, weights.x)
-                        interpolated.addScaled(bValue, weights.y)
-                        interpolated.addScaled(cValue, weights.z)
+
+                        interpolated.addScaled(aValue, weights.x / z0)
+                        interpolated.addScaled(bValue, weights.y / z1)
+                        interpolated.addScaled(cValue, weights.z / z2)
+
+                        val divisor = weights.x / z0 + weights.y / z1 + weights.z / z2
+                        interpolated.mul(1.0 / divisor)
                         member.setter.call(passedData, interpolated)
                     }
                 }
@@ -266,13 +328,21 @@ class Graphics(val context: DSGContext) {
                 if (member.returnType.javaType == Vector4d::class.java) {
                     //println("Creating interpolator for $member")
                     interpolators.add {
+                        val z0 = a.position.z
+                        val z1 = b.position.z
+                        val z2 = c.position.z
+
                         val interpolated = Vector4d(0.0)
                         val aValue: Vector4d = member.getter.call(a) as Vector4d
                         val bValue: Vector4d = member.getter.call(b) as Vector4d
                         val cValue: Vector4d = member.getter.call(c) as Vector4d
-                        interpolated.addScaled(aValue, weights.x)
-                        interpolated.addScaled(bValue, weights.y)
-                        interpolated.addScaled(cValue, weights.z)
+
+                        interpolated.addScaled(aValue, weights.x / z0)
+                        interpolated.addScaled(bValue, weights.y / z1)
+                        interpolated.addScaled(cValue, weights.z / z2)
+
+                        val divisor = weights.x / z0 + weights.y / z1 + weights.z / z2
+                        interpolated.mul(1.0 / divisor)
                         member.setter.call(passedData, interpolated)
                     }
                 }
@@ -285,4 +355,12 @@ class Graphics(val context: DSGContext) {
     }
 
 
+}
+
+private fun Vector4d.normHomogeneous() {
+    this.x /= this.w
+    this.y /= this.w
+    //this.z /= this.w
+    //println(this.z)
+    //this.w = 1.0
 }

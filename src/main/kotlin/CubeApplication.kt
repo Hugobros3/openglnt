@@ -10,10 +10,6 @@ object CubeApplication {
         val context = DSGContext()
         context.openWindow()
 
-        for(i in 500..0) {
-
-        }
-
         val graphics = context.graphics
 
         val grey = Vector4d(0.5, 0.5, 0.5, 1.0)
@@ -86,14 +82,10 @@ object CubeApplication {
             val transformed = Vector4d()
             matrix.transform(vertex.position, transformed)
 
-            transformed.x /= transformed.w
-            transformed.y /= transformed.w
-            transformed.z /= transformed.w
-            transformed.w = 1.0
             IntermediaryDataWithTexcoord(transformed, vertex.textureCoordinate)
         }
 
-        val texture = Texture(ImageIO.read(javaClass.getResource("/openglnt.png")))
+        val texture = Texture(ImageIO.read(javaClass.getResource("/pepe.png")))
         val fragmentShader: Shader.FragmentShaderCtx<IntermediaryDataWithTexcoord>.() -> Unit = {
             output = texture.sample(passedData.texcoord.mul(1.0 + 0.0 * Math.sin(frameNumber * 0.1)))
             /*output.x = -passedData.position.z
@@ -110,15 +102,18 @@ object CubeApplication {
 
             matrix.perspective(Math.PI / 2, 1.0, 0.1, 100.0)
 
-            matrix.translate(0.0, 0.0, 3.0)
+            matrix.translate(0.0, 0.0, 4.0)
+            matrix.rotate(context.frame * 0.01, 1.0, 0.0, 0.0)
             matrix.rotate(context.frame * 0.1, 0.0, 1.0, 0.0)
 
             graphics.clear(grey)
             //graphics.line(Vector2d(0.0, 0.0), Vector2d(1.0, 1.0 + Math.sin(t)), green)
 
+            /** FRONT */
             graphics.triangle(aFront, bFront, cFront, red)
             graphics.triangle(aFront, dFront, cFront, red)
 
+            /** BACK */
             graphics.triangle(aBack, bBack, cBack, red)
             graphics.triangle(aBack, dBack, cBack, red)
 
